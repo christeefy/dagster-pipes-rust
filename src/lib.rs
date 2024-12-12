@@ -22,6 +22,7 @@ pub use crate::types::{Method, PipesContextData, PipesMessage};
 use crate::writer::message_writer::get_opened_payload;
 use crate::writer::message_writer::DefaultWriter as PipesDefaultMessageWriter;
 pub use crate::writer::message_writer::MessageWriter;
+use crate::writer::message_writer_channel::MessageWriteError;
 pub use crate::writer::message_writer_channel::MessageWriterChannel;
 
 #[derive(Serialize)]
@@ -50,7 +51,7 @@ where
         context_data: PipesContextData,
         message_params: Map<String, Value>,
         message_writer: &W,
-    ) -> Self {
+    ) -> Result<Self, MessageWriteError> {
         let mut message_channel = message_writer.open(message_params);
         let opened_payload = get_opened_payload(message_writer);
         let opened_message = PipesMessage {
@@ -58,15 +59,19 @@ where
             method: Method::Opened,
             params: Some(opened_payload),
         };
-        message_channel.write_message(opened_message);
+        message_channel.write_message(opened_message)?;
 
-        Self {
+        Ok(Self {
             data: context_data,
             message_channel,
-        }
+        })
     }
 
-    pub fn report_asset_materialization(&mut self, asset_key: &str, metadata: serde_json::Value) {
+    pub fn report_asset_materialization(
+        &mut self,
+        asset_key: &str,
+        metadata: serde_json::Value,
+    ) -> Result<(), MessageWriteError> {
         let params: HashMap<String, Option<serde_json::Value>> = HashMap::from([
             ("asset_key".to_string(), Some(json!(asset_key))),
             ("metadata".to_string(), Some(metadata)),
@@ -74,7 +79,7 @@ where
         ]);
 
         let msg = PipesMessage::new(Method::ReportAssetMaterialization, Some(params));
-        self.message_channel.write_message(msg);
+        self.message_channel.write_message(msg)
     }
 
     pub fn report_asset_check(
@@ -84,7 +89,7 @@ where
         asset_key: &str,
         severity: &AssetCheckSeverity,
         metadata: serde_json::Value,
-    ) {
+    ) -> Result<(), MessageWriteError> {
         let params: HashMap<String, Option<serde_json::Value>> = HashMap::from([
             ("asset_key".to_string(), Some(json!(asset_key))),
             ("check_name".to_string(), Some(json!(check_name))),
@@ -94,7 +99,7 @@ where
         ]);
 
         let msg = PipesMessage::new(Method::ReportAssetCheck, Some(params));
-        self.message_channel.write_message(msg);
+        self.message_channel.write_message(msg)
     }
 }
 
@@ -108,6 +113,10 @@ pub enum DagsterPipesError {
     #[error("dagster pipes failed to load context: {0}")]
     #[non_exhaustive]
     ContextLoader(#[from] PayloadErrorKind),
+
+    #[error("dagster pipes failed to write message: {0}")]
+    #[non_exhaustive]
+    MessageWriter(#[from] MessageWriteError),
 }
 
 // partial translation of
@@ -123,9 +132,6 @@ pub fn open_dagster_pipes() -> Result<PipesContext<PipesDefaultMessageWriter>, D
 
     let context_data = context_loader.load_context(context_params)?;
 
-    Ok(PipesContext::new(
-        context_data,
-        message_params,
-        &message_writer,
-    ))
+    let context = PipesContext::new(context_data, message_params, &message_writer)?;
+    Ok(context)
 }
